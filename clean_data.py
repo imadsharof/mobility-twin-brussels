@@ -2,8 +2,8 @@ import json
 import pandas as pd
 import os
 
-# Load raw JSON data
-with open("data/raw/punctuality.json", "r", encoding="utf-8") as f:
+# Load raw 30-day JSON data
+with open("data/raw/punctuality_30_days.json", "r", encoding="utf-8") as f:
     data = json.load(f)
 
 # Convert JSON to DataFrame
@@ -86,8 +86,8 @@ clean_df = clean_df[
 os.makedirs("data/processed", exist_ok=True)
 
 # Save clean CSV
-clean_df.to_csv("data/processed/clean_punctuality.csv", index=False)
+clean_df.to_csv("data/processed/clean_punctuality_30_days.csv", index=False)
 
-print("Saved clean data to data/processed/clean_punctuality.csv")
+print("Saved clean data to data/processed/clean_punctuality_30_days.csv")
 print("Rows:", len(clean_df))
 print("Columns:", clean_df.columns.tolist())

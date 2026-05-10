@@ -1,7 +1,7 @@
 import pandas as pd
 
-# Load clean dataset
-df = pd.read_csv("data/processed/clean_punctuality.csv")
+# Load 30-day clean dataset
+df = pd.read_csv("data/processed/clean_punctuality_30_days.csv")
 
 print("=== Dataset Overview ===")
 print("Shape:", df.shape)
@@ -42,3 +42,6 @@ print("\n=== Date Range Check ===")
 print("Earliest date:", df["date"].min())
 print("Latest date:", df["date"].max())
 print("Unique days:", df["date"].nunique())
+
+print("\n=== Records Per Day ===")
+print(df["date"].value_counts().sort_index())
