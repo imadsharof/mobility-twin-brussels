@@ -1,0 +1,4 @@
+.env
+# Ignore raw and processed data files
+data/raw/
+data/processed/
