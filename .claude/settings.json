@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import geopandas, plotly, pandas, nbformat; print\\('geopandas', geopandas.__version__\\); print\\('plotly', plotly.__version__\\); print\\('pandas', pandas.__version__\\); print\\('nbformat', nbformat.__version__\\)\")"
+    ]
+  }
+}
