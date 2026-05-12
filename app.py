@@ -27,7 +27,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from datetime import date
+from datetime import date, timedelta
 
 import geopandas as gpd
 import numpy as np
@@ -283,28 +283,85 @@ def chart_animated_map(stations: gpd.GeoDataFrame):
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
+PRESETS: list[tuple[str, callable]] = [
+    ("Today",         lambda t: (t, t)),
+    ("Last 7 days",   lambda t: (t - timedelta(days=6), t)),
+    ("Last 30 days",  lambda t: (t - timedelta(days=29), t)),
+    ("This month",    lambda t: (t.replace(day=1), t)),
+    ("Last 3 months", lambda t: (t - timedelta(days=89), t)),
+    ("Year-to-date",  lambda t: (date(t.year, 1, 1), t)),
+]
+
+
+def _apply_preset(start_val: date, end_val: date) -> None:
+    """Streamlit button callback — runs BEFORE date_input widgets render."""
+    st.session_state.start_date = start_val
+    st.session_state.end_date = end_val
+
+
 def render_sidebar() -> dict:
+    today = date.today()
+    if "start_date" not in st.session_state:
+        st.session_state.start_date = today.replace(day=1)
+    if "end_date" not in st.session_state:
+        st.session_state.end_date = today
+
     with st.sidebar:
-        st.header("Period")
-        today = date.today()
-        default_start = today.replace(day=1)
-        period = st.date_input(
-            "Date range",
-            value=(default_start, today),
+        st.header("📅 Period")
+
+        st.markdown("**Quick presets**")
+        cols = st.columns(2)
+        for i, (label, fn) in enumerate(PRESETS):
+            s, e = fn(today)
+            cols[i % 2].button(
+                label,
+                key=f"preset_{i}",
+                use_container_width=True,
+                on_click=_apply_preset,
+                args=(s, e),
+            )
+
+        st.markdown("**Custom range**")
+        start = st.date_input(
+            "Start date",
+            key="start_date",
             min_value=date(2023, 1, 1),
             max_value=today,
             format="YYYY-MM-DD",
         )
-        if not (isinstance(period, tuple) and len(period) == 2):
-            st.info("Pick a start AND an end date.")
-            st.stop()
-        start, end = period
+        end = st.date_input(
+            "End date",
+            key="end_date",
+            min_value=date(2023, 1, 1),
+            max_value=today,
+            format="YYYY-MM-DD",
+        )
+
         if start > end:
-            start, end = end, start
+            st.error("⚠️ Start date must be before end date.")
+            st.stop()
 
-        st.caption(f"Range = {(end - start).days + 1} day(s)")
+        days_total = (end - start).days + 1
+        cached_set = set(cached_days())
+        cached_in_range = sum(
+            1 for i in range(days_total) if (start + timedelta(days=i)) in cached_set
+        )
+        to_fetch = days_total - cached_in_range
+        if to_fetch == 0:
+            st.success(f"✅ {days_total} day(s) — all cached, instant load")
+        elif to_fetch <= 7:
+            st.info(
+                f"📅 {days_total} day(s) · {cached_in_range} cached · "
+                f"{to_fetch} to fetch (~{to_fetch}s)"
+            )
+        else:
+            st.warning(
+                f"📅 **{days_total} day(s)** · {cached_in_range} cached · "
+                f"**{to_fetch} to fetch** (~{to_fetch}s, please wait)"
+            )
 
-        st.header("Filters")
+        st.divider()
+        st.header("🔎 Filters")
         weekdays = st.multiselect(
             "Weekdays", WEEKDAY_ORDER, default=WEEKDAY_ORDER,
         )
@@ -319,20 +376,22 @@ def render_sidebar() -> dict:
             help="Hide stations/lines with too few data points in the top-10.",
         )
 
-        st.header("Display")
+        st.divider()
+        st.header("🎨 Display")
         show_stations = st.checkbox("Show stations", value=True)
         show_lines = st.checkbox("Show lines", value=True)
         mode = st.radio("Ranking", ["Stations", "Lines"], horizontal=True)
 
-        st.header("Cache")
-        n_cached = len(cached_days())
-        st.caption(f"{n_cached} day(s) cached on disk.")
-        if st.button("🔄 Force refresh"):
-            st.session_state.refresh_token = (
-                st.session_state.get("refresh_token", 0) + 1
-            )
-            st.cache_data.clear()
-            st.rerun()
+        st.divider()
+        with st.expander("💾 Cache", expanded=False):
+            n_cached = len(cached_days())
+            st.caption(f"{n_cached} day(s) cached on disk in `data/raw/api_cache/`.")
+            if st.button("🔄 Force refresh (re-download)", use_container_width=True):
+                st.session_state.refresh_token = (
+                    st.session_state.get("refresh_token", 0) + 1
+                )
+                st.cache_data.clear()
+                st.rerun()
 
     return dict(
         start=start, end=end,
