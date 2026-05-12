@@ -1,3 +1,9 @@
 pandas
 geopandas
 folium
+requests
+python-dotenv
+streamlit
+pydeck
+plotly
+holidays
