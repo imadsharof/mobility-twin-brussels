@@ -77,6 +77,141 @@ def filter_holidays(df: pd.DataFrame, exclude: bool) -> pd.DataFrame:
     return df[~df["is_holiday"]]
 
 
+def filter_by_stations(df: pd.DataFrame, stations: list[str]) -> pd.DataFrame:
+    if not stations or df.empty:
+        return df
+    sel = {s.strip().upper() for s in stations}
+    return df[df["station_name"].astype("string").str.strip().str.upper().isin(sel)]
+
+
+def filter_by_relations(df: pd.DataFrame, relations: list[str]) -> pd.DataFrame:
+    if not relations or df.empty or "relation" not in df.columns:
+        return df
+    return df[df["relation"].astype("string").isin(relations)]
+
+
+def available_stations(df: pd.DataFrame) -> list[str]:
+    if df.empty or "station_name" not in df.columns:
+        return []
+    return sorted(df["station_name"].dropna().astype(str).str.strip().unique())
+
+
+def available_relations(df: pd.DataFrame) -> list[str]:
+    if df.empty or "relation" not in df.columns:
+        return []
+    return sorted(df["relation"].dropna().astype(str).unique())
+
+
+def available_train_nos(df: pd.DataFrame) -> list[str]:
+    if df.empty or "train_no" not in df.columns:
+        return []
+    return sorted(df["train_no"].dropna().astype(str).unique(), key=lambda s: (len(s), s))
+
+
+# ---------------------------------------------------------------------------
+# Single-entity profiles (drill-down tab)
+# ---------------------------------------------------------------------------
+def station_hourly_profile(df: pd.DataFrame, station_name: str) -> pd.DataFrame:
+    """Mean delay per hour for a single station, plus sample counts."""
+    if df.empty or not station_name:
+        return pd.DataFrame()
+    s = station_name.strip().upper()
+    mask = df["station_name"].astype("string").str.strip().str.upper() == s
+    sub = df[mask].dropna(subset=["hour_arr", "delay_arr_min"]).copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub["hour_arr"] = sub["hour_arr"].astype(int)
+    return (
+        sub.groupby("hour_arr", as_index=False)
+        .agg(
+            mean_delay_min=("delay_arr_min", "mean"),
+            n_observations=("delay_arr_min", "size"),
+        )
+        .round({"mean_delay_min": 2})
+        .rename(columns={"hour_arr": "hour"})
+    )
+
+
+def station_top_trains(
+    df: pd.DataFrame, station_name: str, top_n: int = 15
+) -> pd.DataFrame:
+    """For one station, list the trains that stop there ranked by mean delay."""
+    if df.empty or not station_name:
+        return pd.DataFrame()
+    s = station_name.strip().upper()
+    mask = df["station_name"].astype("string").str.strip().str.upper() == s
+    sub = df[mask].dropna(subset=["train_no", "delay_arr_min"]).copy()
+    if sub.empty:
+        return pd.DataFrame()
+    grouped = (
+        sub.groupby("train_no", as_index=False)
+        .agg(
+            relation=("relation", "first"),
+            stops=("delay_arr_min", "size"),
+            mean_delay_min=("delay_arr_min", "mean"),
+            max_delay_min=("delay_arr_min", "max"),
+        )
+        .round({"mean_delay_min": 2, "max_delay_min": 2})
+        .sort_values("mean_delay_min", ascending=False)
+        .head(top_n)
+    )
+    return grouped
+
+
+def train_journey_profile(df: pd.DataFrame, train_no: str) -> pd.DataFrame:
+    """Average delay per station for one train, in route order.
+
+    Stop order is inferred from the median planned-arrival minute-of-day,
+    so stations come out in the order the train traverses them.
+    """
+    if df.empty or train_no is None or str(train_no) == "":
+        return pd.DataFrame()
+    sub = df[df["train_no"].astype(str) == str(train_no)].dropna(
+        subset=["station_name", "delay_arr_min", "planned_datetime_arr"]
+    ).copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub["minutes_of_day"] = (
+        sub["planned_datetime_arr"].dt.hour * 60
+        + sub["planned_datetime_arr"].dt.minute
+    )
+    profile = (
+        sub.groupby("station_name", as_index=False)
+        .agg(
+            stop_order=("minutes_of_day", "median"),
+            n_days=("delay_arr_min", "size"),
+            mean_delay_min=("delay_arr_min", "mean"),
+            max_delay_min=("delay_arr_min", "max"),
+            relation=("relation", "first"),
+        )
+        .round({"mean_delay_min": 2, "max_delay_min": 2})
+        .sort_values("stop_order")
+        .reset_index(drop=True)
+    )
+    return profile
+
+
+def relation_hourly_profile(df: pd.DataFrame, relation: str) -> pd.DataFrame:
+    """Hourly profile of mean delay for one IC/S/L relation."""
+    if df.empty or not relation:
+        return pd.DataFrame()
+    sub = df[df["relation"].astype("string") == relation].dropna(
+        subset=["hour_arr", "delay_arr_min"]
+    ).copy()
+    if sub.empty:
+        return pd.DataFrame()
+    sub["hour_arr"] = sub["hour_arr"].astype(int)
+    return (
+        sub.groupby("hour_arr", as_index=False)
+        .agg(
+            mean_delay_min=("delay_arr_min", "mean"),
+            n_observations=("delay_arr_min", "size"),
+        )
+        .round({"mean_delay_min": 2})
+        .rename(columns={"hour_arr": "hour"})
+    )
+
+
 def aggregate_weekday_hour(df: pd.DataFrame) -> pd.DataFrame:
     """Mean delay per (weekday, hour) — drives the recurring-patterns heatmap."""
     cols = ["weekday", "hour", "mean_delay_min", "n_observations"]
@@ -139,6 +274,26 @@ def aggregate_station_hour(df: pd.DataFrame) -> pd.DataFrame:
 
     return (
         sub.groupby(["_join_key", "hour_arr"], as_index=False)
+        .agg(
+            mean_delay_min=("delay_arr_min", "mean"),
+            n_observations=("delay_arr_min", "size"),
+        )
+        .round({"mean_delay_min": 2})
+        .rename(columns={"hour_arr": "hour"})
+    )
+
+
+def aggregate_relation_hour(df: pd.DataFrame) -> pd.DataFrame:
+    """Mean delay per (relation, hour) — drives the IC route ranking."""
+    cols = ["relation", "hour", "mean_delay_min", "n_observations"]
+    if df.empty or "relation" not in df.columns:
+        return pd.DataFrame(columns=cols)
+
+    sub = df.dropna(subset=["relation", "hour_arr", "delay_arr_min"]).copy()
+    sub["relation"] = sub["relation"].astype("string")
+    sub["hour_arr"] = sub["hour_arr"].astype(int)
+    return (
+        sub.groupby(["relation", "hour_arr"], as_index=False)
         .agg(
             mean_delay_min=("delay_arr_min", "mean"),
             n_observations=("delay_arr_min", "size"),
