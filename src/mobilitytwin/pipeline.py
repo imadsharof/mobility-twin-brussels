@@ -14,6 +14,8 @@ import geopandas as gpd
 import holidays
 import pandas as pd
 
+from .api import ensure_reference_data
+
 _BE_HOLIDAYS = holidays.country_holidays("BE")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -327,6 +329,8 @@ def aggregate_line_hour(df: pd.DataFrame) -> pd.DataFrame:
 # Geometry loaders (cached at the Streamlit layer)
 # ---------------------------------------------------------------------------
 def load_operational_points() -> gpd.GeoDataFrame:
+    if not OPERATIONAL_POINTS_FILE.exists():
+        ensure_reference_data()
     gdf = gpd.read_file(OPERATIONAL_POINTS_FILE).to_crs(4326)
     name_col = next(
         (c for c in ("shortnamefrench", "shortnamedutch") if c in gdf.columns),
@@ -342,6 +346,8 @@ def load_operational_points() -> gpd.GeoDataFrame:
 
 
 def load_line_sections() -> gpd.GeoDataFrame:
+    if not LINE_SECTIONS_FILE.exists():
+        ensure_reference_data()
     gdf = gpd.read_file(LINE_SECTIONS_FILE).to_crs(4326)
     gdf["linecalfa"] = gdf["linecalfa"].astype("string").str.strip().str.upper()
     gdf = gdf.dropna(subset=["linecalfa"])

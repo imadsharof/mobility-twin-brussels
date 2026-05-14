@@ -110,17 +110,22 @@ def cached_line_sections():
 @st.cache_data(show_spinner=False)
 def load_range_dataframe(
     start: date, end: date, refresh_token: int = 0
-) -> tuple[pd.DataFrame, list[date]]:
+) -> tuple[pd.DataFrame, list[date], dict[date, str]]:
     progress = st.progress(0.0, text=f"Fetching {start} → {end} ...")
 
     def _on_progress(done: int, total: int, day: date) -> None:
         progress.progress(done / total, text=f"Fetched {day} ({done}/{total})")
 
+    fetch_errors: dict[date, str] = {}
     records, failed = fetch_punctuality_range(
-        start, end, on_progress=_on_progress, force=bool(refresh_token < 0)
+        start,
+        end,
+        on_progress=_on_progress,
+        force=bool(refresh_token < 0),
+        failed_errors=fetch_errors,
     )
     progress.empty()
-    return records_to_dataframe(records), failed
+    return records_to_dataframe(records), failed, fetch_errors
 
 
 # ---------------------------------------------------------------------------
@@ -935,7 +940,7 @@ def main() -> None:
     start, end = render_period_sidebar()
 
     # ----- Fetch + clean -----
-    df_raw, failed_days = load_range_dataframe(
+    df_raw, failed_days, fetch_errors = load_range_dataframe(
         start, end, st.session_state.refresh_token
     )
 
@@ -946,6 +951,11 @@ def main() -> None:
             f"{' ...' if len(failed_days) > 5 else ''}. "
             f"Click **🔄 Force refresh** in the sidebar to retry."
         )
+        with st.expander("Fetch error details", expanded=False):
+            for d in failed_days[:10]:
+                st.code(f"{d.isoformat()}: {fetch_errors.get(d, 'unknown error')}")
+            if len(failed_days) > 10:
+                st.caption(f"{len(failed_days) - 10} more day(s) omitted.")
 
     # ----- Sidebar (filters section, dynamic options from df_raw) -----
     filt_ctx = render_filters_sidebar(df_raw)
