@@ -38,12 +38,15 @@ import plotly.graph_objects as go
 import pydeck as pdk
 import streamlit as st
 
+from trends_tab import render_trends_tab
+
 _BE_HOLIDAYS = holidays.country_holidays("BE")
 
 from mobilitytwin.api import (
     cached_days,
     fetch_punctuality_range,
 )
+
 from mobilitytwin.pipeline import (
     WEEKDAY_ORDER,
     aggregate_line_hour,
@@ -985,9 +988,9 @@ def main() -> None:
     segments = join_lines(lines_agg, cached_line_sections())
 
     # ----- Tabs -----
-    tab_map, tab_pat, tab_anim, tab_drill, tab_trains = st.tabs([
+    tab_map, tab_pat, tab_anim, tab_drill, tab_trains, tab_trends = st.tabs([
         "🗺️ Map", "📊 Patterns", "🎬 Animation",
-        "🔍 Drill-down", "🚆 Trains",
+        "🔍 Drill-down", "🚆 Trains", "📈 Trends",
     ])
     with tab_map:
         render_map_tab(stations, segments, relations_hour, ctx, df)
@@ -999,6 +1002,8 @@ def main() -> None:
         render_drilldown_tab(df, ctx)
     with tab_trains:
         render_trains_tab(df, ctx)
+    with tab_trends:
+        render_trends_tab(df, ctx)
 
 
 if __name__ == "__main__":

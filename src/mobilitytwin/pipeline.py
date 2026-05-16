@@ -394,3 +394,175 @@ def join_lines(
     merged = agg.merge(lines, left_on="line_no", right_on="linecalfa", how="inner")
     merged = gpd.GeoDataFrame(merged, geometry="geometry", crs=lines.crs or "EPSG:4326")
     return merged[out_cols]
+
+ 
+# ---------------------------------------------------------------------------
+# Trends analysis — NEW functions to add to pipeline.py
+# ---------------------------------------------------------------------------
+ 
+def aggregate_weekly_trend(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Group arrivals by ISO calendar week.
+ 
+    Returns one row per week with:
+      iso_year, iso_week, week_label (str "YYYY-Www"),
+      mean_delay_min, late_pct (fraction arriving ≥5 min late),
+      n_observations, z_score (how many SDs above the overall mean).
+ 
+    Use this to spot structural degradation or outlier weeks (strikes, weather).
+    """
+    cols = ["iso_year", "iso_week", "week_label",
+            "mean_delay_min", "late_pct", "n_observations", "z_score"]
+    if df.empty or "date" not in df.columns:
+        return pd.DataFrame(columns=cols)
+ 
+    sub = df.dropna(subset=["date", "delay_arr_min"]).copy()
+    sub["date"] = pd.to_datetime(sub["date"])
+    iso = sub["date"].dt.isocalendar()
+    sub["iso_year"] = iso["year"].astype(int)
+    sub["iso_week"] = iso["week"].astype(int)
+    sub["is_late_5"] = sub["delay_arr_min"] >= 5
+ 
+    agg = (
+        sub.groupby(["iso_year", "iso_week"], as_index=False)
+        .agg(
+            mean_delay_min=("delay_arr_min", "mean"),
+            late_pct=("is_late_5", "mean"),
+            n_observations=("delay_arr_min", "size"),
+        )
+        .sort_values(["iso_year", "iso_week"])
+        .reset_index(drop=True)
+    )
+    agg["week_label"] = (
+        agg["iso_year"].astype(str) + "-W"
+        + agg["iso_week"].astype(str).str.zfill(2)
+    )
+ 
+    mu = agg["mean_delay_min"].mean()
+    sigma = agg["mean_delay_min"].std()
+    agg["z_score"] = ((agg["mean_delay_min"] - mu) / sigma).round(2) if sigma > 0 else 0.0
+ 
+    return agg.round({"mean_delay_min": 2, "late_pct": 4})[cols]
+ 
+ 
+def recurring_offenders(
+    df: pd.DataFrame,
+    threshold_min: float = 5.0,
+    min_late_days: int = 3,
+    top_n: int = 20,
+) -> pd.DataFrame:
+    """
+    Find (train_no, weekday) pairs that are structurally late.
+ 
+    A 'recurring offender' is a train that arrives ≥ threshold_min late
+    on the same weekday at least min_late_days times.  Deduplicating by day
+    means a train stopping at 10 stations still counts as ONE run per day.
+ 
+    Returns columns:
+      train_no, relation, weekday,
+      late_days       — number of distinct days it was late on that weekday,
+      total_days      — how many times it ran on that weekday,
+      late_rate       — late_days / total_days,
+      mean_delay_min  — mean delay on days it ran (including on-time runs),
+      max_delay_min.
+    """
+    cols = ["train_no", "relation", "weekday",
+            "late_days", "total_days", "late_rate",
+            "mean_delay_min", "max_delay_min"]
+    if df.empty or "train_no" not in df.columns:
+        return pd.DataFrame(columns=cols)
+ 
+    sub = df.dropna(subset=["train_no", "weekday", "delay_arr_min", "date"]).copy()
+    sub["date_only"] = pd.to_datetime(sub["date"]).dt.date
+    sub["is_late"] = sub["delay_arr_min"] >= threshold_min
+ 
+    # One row per (train_no, weekday, date) — dedup across stations
+    daily = (
+        sub.groupby(["train_no", "weekday", "date_only"], as_index=False)
+        .agg(
+            is_late=("is_late", "any"),
+            delay_arr_min=("delay_arr_min", "mean"),
+            relation=("relation", "first"),
+        )
+    )
+ 
+    result = (
+        daily.groupby(["train_no", "weekday"], as_index=False)
+        .agg(
+            relation=("relation", "first"),
+            late_days=("is_late", "sum"),
+            total_days=("is_late", "size"),
+            mean_delay_min=("delay_arr_min", "mean"),
+            max_delay_min=("delay_arr_min", "max"),
+        )
+    )
+    result["late_rate"] = (result["late_days"] / result["total_days"]).round(3)
+    result = (
+        result[result["late_days"] >= min_late_days]
+        .sort_values("late_days", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+        .round({"mean_delay_min": 2, "max_delay_min": 2})
+    )
+    return result[cols]
+ 
+ 
+def propagation_delta(df: pd.DataFrame, train_no: str) -> pd.DataFrame:
+    """
+    Extend train_journey_profile with stop-to-stop delay change and a role label.
+ 
+    Role logic (applied to mean_delay_min delta):
+      'initiator'  — first stop where delay jumps by ≥ 2 min
+      'amplifier'  — subsequent stop where delay increases by ≥ 1 min
+      'absorber'   — stop where delay decreases by ≥ 1 min
+      'neutral'    — change within ±1 min
+ 
+    Returns all columns from train_journey_profile plus:
+      delta_min  (delay change vs previous stop),
+      role       (string label above).
+    """
+    # Re-use the existing journey profile logic inline
+    if df.empty or not train_no:
+        return pd.DataFrame()
+ 
+    sub = df[df["train_no"].astype(str) == str(train_no)].dropna(
+        subset=["station_name", "delay_arr_min", "planned_datetime_arr"]
+    ).copy()
+    if sub.empty:
+        return pd.DataFrame()
+ 
+    sub["minutes_of_day"] = (
+        sub["planned_datetime_arr"].dt.hour * 60
+        + sub["planned_datetime_arr"].dt.minute
+    )
+    profile = (
+        sub.groupby("station_name", as_index=False)
+        .agg(
+            stop_order=("minutes_of_day", "median"),
+            n_days=("delay_arr_min", "size"),
+            mean_delay_min=("delay_arr_min", "mean"),
+            max_delay_min=("delay_arr_min", "max"),
+            relation=("relation", "first"),
+        )
+        .round({"mean_delay_min": 2, "max_delay_min": 2})
+        .sort_values("stop_order")
+        .reset_index(drop=True)
+    )
+ 
+    profile["delta_min"] = profile["mean_delay_min"].diff().round(2)
+ 
+    first_big_jump = profile["delta_min"].ge(2).idxmax() if profile["delta_min"].ge(2).any() else None
+ 
+    def _role(row):
+        if pd.isna(row["delta_min"]):
+            return "neutral"
+        if first_big_jump is not None and row.name == first_big_jump:
+            return "initiator"
+        if row["delta_min"] >= 1:
+            return "amplifier"
+        if row["delta_min"] <= -1:
+            return "absorber"
+        return "neutral"
+ 
+    profile["role"] = profile.apply(_role, axis=1)
+    return profile
